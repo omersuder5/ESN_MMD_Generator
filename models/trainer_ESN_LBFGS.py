@@ -117,7 +117,7 @@ def fit_ESN_MMD_LBFGS(
         Zm_raw = Xhist @ W.T  # (N_model,T,d)
 
         eps = 1e-8
-        if target_type is None:
+        if target_type == "returns" or target_type == None:
             Zm = Zm_raw
         elif target_type == "log_returns":
             Zm = torch.log1p(Zm_raw)

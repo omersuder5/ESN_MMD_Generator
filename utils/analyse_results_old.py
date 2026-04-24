@@ -88,54 +88,32 @@ def _acf_vectors(X, lag, component=0, square=False):
 
     return out
 
+
+def _acf_mean_std(X, lag, component=0, square=False):
+    A = _acf_vectors(X, lag, component, square)
+    return A.mean(axis=0), A.std(axis=0)
+
+
 # ============================================================
-# Plotting (ACF distribution, path samples, etc)
+# Plotting (overlapping bars)
 # ============================================================
-def _plot_acf_box(ax, A_tgt, A_esn, lags, title="ACF distribution"):
-    A_tgt = np.asarray(A_tgt)
-    A_esn = np.asarray(A_esn)
 
-    width = 0.35
-    pos = np.arange(A_tgt.shape[1])
+def _plot_acf_compare(ax, lags, m1, m2, s1=None, s2=None, title=""):
+    width = 0.4
 
-    median_tgt = dict(color="blue", linewidth=3)
-    median_esn = dict(color="red", linewidth=3)
+    ax.bar(lags - width/2, m1, width=width, alpha=0.7, label="target")
+    ax.bar(lags + width/2, m2, width=width, alpha=0.7, label="esn")
 
-    bp1 = ax.boxplot(
-        [A_tgt[:, k] for k in range(A_tgt.shape[1])],
-        positions=pos - width / 2,
-        widths=0.25,
-        showfliers=False,
-        patch_artist=False,
-        medianprops=median_tgt,
-    )
+    if s1 is not None:
+        ax.errorbar(lags - width/2, m1, yerr=s1, fmt="none", capsize=2)
+    if s2 is not None:
+        ax.errorbar(lags + width/2, m2, yerr=s2, fmt="none", capsize=2)
 
-    bp2 = ax.boxplot(
-        [A_esn[:, k] for k in range(A_esn.shape[1])],
-        positions=pos + width / 2,
-        widths=0.25,
-        showfliers=False,
-        patch_artist=False,
-        medianprops=median_esn,
-    )
-
-    ax.axhline(0.0, color="black", linewidth=1)
-
-    ax.set_xticks(pos)
-    ax.set_xticklabels(lags)
+    ax.axhline(0, linewidth=1)
     ax.set_title(title)
-    ax.set_xlabel("lag")
-    ax.set_ylabel("ACF")
+    ax.legend()
 
-    # proxy artists for legend
-    from matplotlib.lines import Line2D
 
-    legend_elements = [
-        Line2D([0], [0], color="blue", lw=3, label="Target median"),
-        Line2D([0], [0], color="red", lw=3, label="ESN median"),
-    ]
-
-    ax.legend(handles=legend_elements)
 # ============================================================
 # Main ACF analysis
 # ============================================================
@@ -155,32 +133,41 @@ def acf_analysis(
 ):
     if (Z_target is None) == (target_generator is None):
         raise ValueError("Provide exactly one of Z_target or target_generator")
-
+    
+    
     with torch.no_grad():
+
+        # ---- target resolution (NO resampling, NO noise here) ----
         if target_generator is not None:
             Z_target = target_generator.generate(N=N, T=T)
 
+        if Z_target.ndim != 3:
+            raise ValueError("Z_target must be (N,T,d)")
+
         Z_target = Z_target.to(device=device, dtype=dtype)
+
+        # ---- ESN generation (self-contained stochasticity) ----
         Z_esn = esn(T=T, N=N).to(device=device, dtype=dtype)
 
     N = min(N, Z_target.shape[0])
     T = min(T, Z_target.shape[1])
 
-    Z_target = Z_target[:N, :T]
+    Z_target = Z_target[:N, :T].to(device=device, dtype=dtype)
     Z_esn = Z_esn[:N, :T]
 
-    # ---- ACF of returns ----
-    A_tgt = _acf_vectors(Z_target, lag, component)
-    A_esn = _acf_vectors(Z_esn, lag, component)
-
-    # ---- ACF of squared returns ----
-    A2_tgt = _acf_vectors(Z_target ** 2, lag, component)
-    A2_esn = _acf_vectors(Z_esn ** 2, lag, component)
-
-    lag_eff = A_tgt.shape[1]
+    lag_eff = min(lag, T - 1)
     lags = np.arange(1, lag_eff + 1)
 
-    # ---- path plots ----
+    # ACF(x)
+    acf_tgt, acf_tgt_std = _acf_mean_std(Z_target, lag, component, False)
+    acf_esn, acf_esn_std = _acf_mean_std(Z_esn, lag, component, False)
+
+    # ACF(x^2)
+    acf2_tgt, acf2_tgt_std = _acf_mean_std(Z_target, lag, component, True)
+    acf2_esn, acf2_esn_std = _acf_mean_std(Z_esn, lag, component, True)
+
+    # drop lag 0 already done → vectors align with lags
+    # plotting
     if show_paths:
         fig, ax = plt.subplots(2, 1, figsize=(10, 4), sharex=True)
         ax[0].plot(Z_target[0, :, component].cpu().numpy())
@@ -190,24 +177,37 @@ def acf_analysis(
         plt.tight_layout()
         plt.show()
 
-    # ---- ACF plots ----
     fig, ax = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
 
-    _plot_acf_box(ax[0], A_tgt, A_esn, lags, title="ACF returns")
-    _plot_acf_box(ax[1], A2_tgt, A2_esn, lags, title="ACF squared returns")
+    _plot_acf_compare(
+        ax[0], lags,
+        acf_tgt, acf_esn,
+        acf_tgt_std, acf_esn_std,
+        title="ACF of x_t"
+    )
+
+    _plot_acf_compare(
+        ax[1], lags,
+        acf2_tgt, acf2_esn,
+        acf2_tgt_std, acf2_esn_std,
+        title="ACF of x_t^2"
+    )
 
     ax[1].set_xlabel("lag")
+    for a in ax:
+        a.set_ylabel("acf")
 
     plt.tight_layout()
     plt.show()
 
     return {
         "lags": lags,
-        "acf_target": A_tgt,
-        "acf_esn": A_esn,
-        "acf2_target": A2_tgt,
-        "acf2_esn": A2_esn,
+        "acf_target": acf_tgt,
+        "acf_esn": acf_esn,
+        "acf2_target": acf2_tgt,
+        "acf2_esn": acf2_esn,
     }
+
 
 # ============================================================
 # Two-sample permutation test on ACF

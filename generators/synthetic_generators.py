@@ -93,10 +93,11 @@ class Proc(nn.Module):
 
 class ARMA(Proc):
     # x_t = sum_i phi_i x_{t-i} + eps_t + sum_j theta_j eps_{t-j}
-    def __init__(self, T: int, p: int, q: int, phi=None, theta=None, d: int = 1, burnin: Optional[int] = None):
+    def __init__(self, T: int, p: int, q: int, phi=None, theta=None, d: int = 1, burnin: Optional[int] = None, noise: Optional[Noise] = None):
         super().__init__(T, d)
         self.p, self.q = int(p), int(q)
         self.burnin = int(burnin) if burnin is not None else None
+        self.noise = noise
 
         if self.p:
             phi = torch.zeros(self.p) if phi is None else torch.as_tensor(phi)
@@ -113,14 +114,14 @@ class ARMA(Proc):
             self.register_buffer("theta", torch.empty(0, dtype=self.dtype))
 
     def _gen(self, N: int, eps: Tensor) -> Tensor:
-        # If burnin is set, generate burnin+T points and return only last T; else, just T points
-        T = eps.shape[1]
-        d = self.d
         burnin = self.burnin if self.burnin is not None else 0
-        total_T = T + burnin if self.burnin is not None else T
+        total_T = eps.shape[1]
+        d = self.d
+
         x = torch.zeros((N, total_T, d), device=self.device, dtype=self.dtype)
 
         for t in range(total_T):
+
             ar = 0.0
             if self.p:
                 for i in range(1, self.p + 1):
@@ -133,15 +134,27 @@ class ARMA(Proc):
                     if t - j >= 0:
                         ma = ma + self.theta[j - 1] * eps[:, t - j, :]
 
-            # For eps, if using burnin, pad with zeros for the first burnin steps
-            if self.burnin is not None and t < burnin:
-                eps_t = torch.zeros((N, d), device=self.device, dtype=self.dtype)
-            else:
-                eps_t = eps[:, t - burnin, :] if self.burnin is not None else eps[:, t, :]
+            x[:, t, :] = ar + eps[:, t, :] + ma
 
-            x[:, t, :] = ar + eps_t + ma
+        return x[:, burnin:, :]
+    
+    def generate(self, N: int, T: int | None = None, eps: Tensor | None = None):
 
-        return x[:, burnin:, :] if self.burnin is not None else x
+        if T is None:
+            T = self.T
+
+        burnin = self.burnin if self.burnin is not None else 0
+        total_T = T + burnin
+
+        if eps is None:
+            noise = self.noise or Noise("normal")
+            eps = noise.sample((N, total_T, self.d),
+                            device=self.device,
+                            dtype=self.dtype)
+        else:
+            eps = eps.to(device=self.device, dtype=self.dtype)
+
+        return self._gen(N, eps)
 
     def spec(self) -> dict:
         return {
@@ -163,13 +176,14 @@ class ARMA(Proc):
 class GARCH11(Proc):
     # sigma^2_t = omega + alpha * eps^2_{t-1} + beta * sigma^2_{t-1}
     # x_t = sigma_t * z_t    where z_t is the provided noise eps
-    def __init__(self, T: int, omega: float, alpha: float, beta: float, d: int = 1, sigma2_0: float = 1.0, burnin: Optional[int] = None):
+    def __init__(self, T: int, omega: float, alpha: float, beta: float, d: int = 1, sigma2_0: float = 1.0, burnin: Optional[int] = None, noise: Optional[Noise] = None):
         super().__init__(T, d)
         self.omega = float(omega)
         self.alpha = float(alpha)
         self.beta = float(beta)
         self.sigma2_0 = float(sigma2_0)
         self.burnin = int(burnin) if burnin is not None else None
+        self.noise = noise
         if self.omega <= 0:
             raise ValueError("omega must be > 0")
         if self.alpha < 0 or self.beta < 0:
@@ -177,25 +191,35 @@ class GARCH11(Proc):
         if self.alpha + self.beta >= 1:
             raise ValueError("Need alpha + beta < 1 for (variance) stationarity")
 
-    def _gen(self, N: int, z: Tensor) -> Tensor:
-        # If burnin is set, generate burnin+T points and return only last T; else, just T points
-        T = z.shape[1]
+    def _gen(self, N: int, z: Optional[Tensor] = None) -> Tensor:
+        T = self.T if z is None else z.shape[1]
+
         d = self.d
         burnin = self.burnin if self.burnin is not None else 0
         total_T = T + burnin if self.burnin is not None else T
-        x = torch.zeros((N, total_T, d), device=self.device, dtype=self.dtype)
 
-        sigma2 = torch.full((N, d), self.sigma2_0, device=self.device, dtype=self.dtype)
-        eps_prev = torch.zeros((N, d), device=self.device, dtype=self.dtype)
+        device, dtype = self.device, self.dtype
+
+        x = torch.zeros((N, total_T, d), device=device, dtype=dtype)
+
+        sigma2 = torch.full((N, d), self.sigma2_0, device=device, dtype=dtype)
+        eps_prev = torch.zeros((N, d), device=device, dtype=dtype)
+
+        # ---- sample noise if not provided ----
+        if z is None:
+            noise = self.noise or Noise("normal")
+            z = noise.sample((N, total_T, d), device=device, dtype=dtype)
 
         for t in range(total_T):
+
             sigma2 = self.omega + self.alpha * (eps_prev ** 2) + self.beta * sigma2
             sigma2 = torch.clamp(sigma2, min=1e-12)
-            # For z, if using burnin, pad with zeros for the first burnin steps
+
             if self.burnin is not None and t < burnin:
-                z_t = torch.zeros((N, d), device=self.device, dtype=self.dtype)
+                z_t = torch.zeros((N, d), device=device, dtype=dtype)
             else:
                 z_t = z[:, t - burnin, :] if self.burnin is not None else z[:, t, :]
+
             eps_t = torch.sqrt(sigma2) * z_t
             x[:, t, :] = eps_t
             eps_prev = eps_t

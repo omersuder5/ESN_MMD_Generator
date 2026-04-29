@@ -5,6 +5,8 @@ from typing import Callable, Optional, Union, Literal, Dict
 import torch
 import torch.nn as nn
 
+from .noise import Noise
+
 Tensor = torch.Tensor
 
 def _get_activation(name_or_fn: Union[str, Callable[[Tensor], Tensor]]) -> Callable[[Tensor], Tensor]:
@@ -12,6 +14,9 @@ def _get_activation(name_or_fn: Union[str, Callable[[Tensor], Tensor]]) -> Calla
     if callable(name_or_fn):
         return name_or_fn
     name = str(name_or_fn).lower()
+
+    if name in ["identity", "linear", "none"]:
+        return lambda x: x
     if name == "tanh":
         return torch.tanh
     if name == "relu":
@@ -84,10 +89,12 @@ class ESNGenerator(nn.Module):
         C: Tensor,
         out_dim: int,
         *,
+        noise: Optional[Noise] = None,
         activation: Union[str, Callable[[Tensor], Tensor]] = "tanh",
         xi_scale: float = 1.0,
         eta_scale: float = 1.0,
         target_rho: float = 0.9,
+        target_C_scale: Optional[float] = None,
         xi_ma_theta: Optional[Tensor] = None,
         t_tilt: Optional[Tensor] = None,
         W_init_std: float = 0.1,
@@ -100,6 +107,7 @@ class ESNGenerator(nn.Module):
         super().__init__()
         A = torch.as_tensor(A)
         C = torch.as_tensor(C)
+        self.noise = noise if noise is not None else Noise("normal")
 
         if A.ndim != 2 or A.shape[0] != A.shape[1]:
             raise ValueError("A must be square (h,h)")
@@ -126,6 +134,7 @@ class ESNGenerator(nn.Module):
 
         # Rescale A to have spectral radius target_rho < 1 for echo state property, and register buffers/parameters
         A = rescale_spectral_radius(A, float(target_rho))
+        C = rescale_spectral_radius(C, float(target_C_scale)) if target_C_scale is not None and target_C_scale != 1 else C
         self.register_buffer("A", A)
         self.register_buffer("C", C)
 
@@ -159,8 +168,8 @@ class ESNGenerator(nn.Module):
         xi_ma_theta = self.xi_ma_theta
 
         # iid innovations
-        xi_e = torch.randn(N, T, self.m, device=device, dtype=dtype) * self.xi_scale
-        eta = torch.randn(N, T, self.d, device=device, dtype=dtype) * self.eta_scale
+        xi_e = self.noise.sample((N, T, self.m), device=device, dtype=dtype) * self.xi_scale
+        eta = self.noise.sample((N, T, self.d), device=device, dtype=dtype) * self.eta_scale
 
         # colored input noise
         if xi_ma_theta is not None:
@@ -181,6 +190,7 @@ class ESNGenerator(nn.Module):
         xi: Optional[Tensor] = None,     # (N,T,m) or None
         eta: Optional[Tensor] = None,    # (N,T,d) or None
         return_states: bool = False,
+        track_saturation: bool = False,  # If True, track fraction of reservoir units that are saturated (for tanh activation)
     ):
         device, dtype = self.A.device, self.A.dtype
 
@@ -233,6 +243,10 @@ class ESNGenerator(nn.Module):
         Z_full = torch.empty(N, total_T, self.d, device=device, dtype=dtype)
         Xhist_full = torch.empty(N, total_T, self.h, device=device, dtype=dtype) if return_states else None
 
+        # saturation counters
+        if track_saturation:
+            _pre_activation = torch.empty(N, total_T, self.h, device=device, dtype=dtype)
+
         A, C, W = self.A, self.C, self.W
         act = self.activation
 
@@ -240,6 +254,8 @@ class ESNGenerator(nn.Module):
             pre = x @ A.T + xi[:, t, :] @ C.T
             if self.quad_feedback:
                 pre = pre + (x * x) @ self.G_quad.T
+            if track_saturation:    
+                _pre_activation[:, t, :] = pre
             x = act(pre)
             z = x @ W.T + eta[:, t, :]
             if tilt is not None:
@@ -251,6 +267,10 @@ class ESNGenerator(nn.Module):
         # Only return the last T points after washout
         Z = Z_full[:, self.washout_len:, :]
         Xhist = Xhist_full[:, self.washout_len:, :] if return_states else None
+        
+        if track_saturation:
+            pre_activation = _pre_activation[:, self.washout_len:, :]
+            return (Z, Xhist, pre_activation) if return_states else (Z, pre_activation)
 
         return (Z, Xhist) if return_states else Z
 

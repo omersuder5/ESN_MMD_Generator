@@ -124,6 +124,7 @@ def fit_ESN_MMD_LBFGS(
         elif target_type == "sqrd_log_returns":
             Zm = torch.log1p(Zm_raw) ** 2
         elif target_type == "log_sqrd_returns":
+            # Zm = torch.log(Zm_raw ** 2 + eps)
             Zm = torch.log(Zm_raw ** 2 + eps)
 
         if kernel_mode == "static":

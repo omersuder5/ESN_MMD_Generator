@@ -27,6 +27,8 @@ def _get_activation(name_or_fn: Union[str, Callable[[Tensor], Tensor]]) -> Calla
         return torch.nn.functional.gelu
     if name == "softplus":
         return torch.nn.functional.softplus
+    if name in ["silu", "swish"]:
+        return torch.nn.functional.silu
     raise ValueError(f"Unknown activation: {name_or_fn}")
 
 def _ma_filter(e: Tensor, theta: Tensor) -> Tensor:
@@ -105,7 +107,6 @@ class ESNGenerator(nn.Module):
         train_quad: bool = False,     # If True, make quadratic feedback trainable
         W_init: Optional[Tensor] = None,
         washout_len: Optional[int] = None,  # Optional washout length; if None, defaults to h
-        
     ):
         super().__init__()
         A = torch.as_tensor(A)
@@ -141,16 +142,30 @@ class ESNGenerator(nn.Module):
         self.register_buffer("A", A)
         self.register_buffer("C", C)
 
+        self.readout_h = int(64)
+
         if W_init is None:
-            W0 = torch.randn(self.d, self.h, device=A.device, dtype=A.dtype) * float(W_init_std)
+            self.W_init_std = float(W_init_std)
+            # W0 = torch.randn(self.d, self.h, device=A.device, dtype=A.dtype) * float(W_init_std)
+            W0 = torch.randn(self.d, self.readout_h, device=A.device, dtype=A.dtype) * float(W_init_std)
         else:
             W0 = torch.as_tensor(W_init, device=A.device, dtype=A.dtype)
         self.W = nn.Parameter(W0)
+
+        # _W_sigma = torch.randn(self.d, self.h, device=A.device, dtype=A.dtype) * float(self.W_init_std)
+        _W_sigma = torch.randn(self.readout_h, self.h, device=A.device, dtype=A.dtype) * float(self.W_init_std)
+
+        self.W_sigma = nn.Parameter(_W_sigma)
 
         self.activation = _get_activation(activation)
         self.activation_name = activation if isinstance(activation, str) else getattr(activation, "__name__", "custom")
         self.xi_scale = float(xi_scale)
         self.eta_scale = float(eta_scale)
+
+        self.act_2 = _get_activation("gelu")
+        B = torch.randn(self.h, self.d) * 0.1
+        B = torch.as_tensor(B, device=A.device, dtype=A.dtype)
+        self.register_buffer('B', B)
 
         if t_tilt is None:
             self.register_buffer("t_tilt", None, persistent=False)
@@ -252,15 +267,31 @@ class ESNGenerator(nn.Module):
 
         A, C, W = self.A, self.C, self.W
         act = self.activation
+        
+        W_sigma = self.W_sigma
+        # act_2 = _get_activation("softplus")  # Use softplus to ensure positivity of sigma for noise injection
+        act_2 = self.act_2
 
+        # for feedback loop
+        z = torch.zeros(N, self.d, device=device, dtype=dtype)
+        B = self.B
+        
         for t in range(total_T):
-            pre = x @ A.T + xi[:, t, :] @ C.T
+            # pre = x @ A.T + (act_2(x @ W_sigma.T) * xi[:, t, :]) @ C.T
+            # pre = x @ A.T + xi[:, t, :] @ C.T
+            pre = x @ A.T + xi[:, t, :] @ C.T + z @ B.T # big change: add feedback from output to reservoir
             if self.quad_feedback:
                 pre = pre + (x * x) @ self.G_quad.T
             if track_saturation:    
                 _pre_activation[:, t, :] = pre
             x = act(pre)
-            z = x @ W.T + eta[:, t, :]
+            # z = x @ W.T + act_2(x @ W_sigma.T) * eta[:, t, :]
+              # shallow nonlinear readout
+            h = act_2(x @ W_sigma.T )
+
+            z = h @ W.T + eta[:, t, :]
+            # z = x @ W.T + eta[:, t, :]
+            # z = x @ W.T + eta[:, t, :]
             if tilt is not None:
                 z = z + tilt[:, t, :]
             Z_full[:, t, :] = z

@@ -316,9 +316,11 @@ def summarize_params(phis, thetas):
     if phis.size > 0:
         summary["phi_mean"] = phis.mean(axis=0)
         summary["phi_std"] = phis.std(axis=0)
+        summary["phi_median"] = np.median(phis, axis=0)
 
     if thetas.size > 0:
         summary["theta_mean"] = thetas.mean(axis=0)
         summary["theta_std"] = thetas.std(axis=0)
+        summary["theta_median"] = np.median(thetas, axis=0)
 
     return summary

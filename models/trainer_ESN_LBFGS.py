@@ -112,52 +112,27 @@ def fit_ESN_MMD_LBFGS(
         tolerance_grad=tol_grad,
         tolerance_change=tol_change,
     )
-
-    def mmd_loss_from_W() -> Tensor:
-
-        act_2 = esn.act_2
-
-        Hm = act_2(Xhist @ esn.W_sigma.T)
-
-        Zm_raw = Hm @ W.T
-
-        eps = 1e-8
-
-        if target_type == "returns" or target_type is None:
-            Zm = Zm_raw
-
-        elif target_type == "log_returns":
-            Zm = torch.log1p(Zm_raw)
-
-        elif target_type == "sqrd_log_returns":
-            Zm = torch.log1p(Zm_raw) ** 2
-
-        elif target_type == "log_sqrd_returns":
-            Zm = torch.log(Zm_raw ** 2 + eps)
-
-        if kernel_mode == "static":
-            Xk = Z_target.reshape(N_target, -1)
-            Yk = Zm.reshape(N_model, -1)
-        else:
-            Xk, Yk = Z_target, Zm
-
-        return (
-            compute_mmd_loss(kernel, Xk, Yk, lead_lag, lags)
-            + 1e-3 * torch.linalg.norm(W)
-        )
-
+    # # Non-linear readout (neural network)
     # def mmd_loss_from_W() -> Tensor:
-    #     Zm_raw = Xhist @ W.T  # (N_model,T,d)
+
+    #     act_2 = esn.act_2
+
+    #     Hm = act_2(Xhist @ esn.W_sigma.T)
+
+    #     Zm_raw = Hm @ W.T
 
     #     eps = 1e-8
-    #     if target_type == "returns" or target_type == None:
+
+    #     if target_type == "returns" or target_type is None:
     #         Zm = Zm_raw
+
     #     elif target_type == "log_returns":
     #         Zm = torch.log1p(Zm_raw)
+
     #     elif target_type == "sqrd_log_returns":
     #         Zm = torch.log1p(Zm_raw) ** 2
+
     #     elif target_type == "log_sqrd_returns":
-    #         # Zm = torch.log(Zm_raw ** 2 + eps)
     #         Zm = torch.log(Zm_raw ** 2 + eps)
 
     #     if kernel_mode == "static":
@@ -166,8 +141,33 @@ def fit_ESN_MMD_LBFGS(
     #     else:
     #         Xk, Yk = Z_target, Zm
 
-    #     # compute_mmd_loss is assumed to handle different batch sizes
-    #     return compute_mmd_loss(kernel, Xk, Yk, lead_lag, lags) + 1e-3 * float(torch.linalg.norm(W))
+    #     return (
+    #         compute_mmd_loss(kernel, Xk, Yk, lead_lag, lags)
+    #         + 1e-3 * torch.linalg.norm(W)
+    #     )
+
+    def mmd_loss_from_W() -> Tensor:
+        Zm_raw = Xhist @ W.T  # (N_model,T,d)
+
+        eps = 1e-8
+        if target_type == "returns" or target_type == None:
+            Zm = Zm_raw
+        elif target_type == "log_returns":
+            Zm = torch.log1p(Zm_raw)
+        elif target_type == "sqrd_log_returns":
+            Zm = torch.log1p(Zm_raw) ** 2
+        elif target_type == "log_sqrd_returns":
+            # Zm = torch.log(Zm_raw ** 2 + eps)
+            Zm = torch.log(Zm_raw ** 2 + eps)
+
+        if kernel_mode == "static":
+            Xk = Z_target.reshape(N_target, -1)
+            Yk = Zm.reshape(N_model, -1)
+        else:
+            Xk, Yk = Z_target, Zm
+
+        # compute_mmd_loss is assumed to handle different batch sizes
+        return compute_mmd_loss(kernel, Xk, Yk, lead_lag, lags) + 1e-3 * float(torch.linalg.norm(W))
     
     loss_history = []
 

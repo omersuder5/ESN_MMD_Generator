@@ -152,11 +152,11 @@ class GARCH11(Proc):
             raise ValueError("Need alpha + beta < 1 for (variance) stationarity")
 
     def _gen(self, N: int, z: Optional[Tensor] = None) -> Tensor:
-        T = self.T if z is None else z.shape[1]
-
         d = self.d
         burnin = self.burnin if self.burnin is not None else 0
-        total_T = T + burnin if self.burnin is not None else T
+        # When z is provided, it already includes the burnin steps (added by generate()).
+        # Only add burnin when sampling internally (z is None).
+        total_T = z.shape[1] if z is not None else self.T + burnin
 
         device, dtype = self.device, self.dtype
 

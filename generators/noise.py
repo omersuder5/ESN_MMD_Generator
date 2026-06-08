@@ -11,7 +11,7 @@ Tensor = torch.Tensor
 
 @dataclass
 class Noise:
-    kind: Literal["normal", "t", "gamma"] = "normal"
+    kind: Literal["normal", "t", "gamma", "uniform"] = "normal"
     params: Dict = None
 
     def sample(self, shape, device=None, dtype=None) -> Tensor:
@@ -35,6 +35,11 @@ class Noise:
             conc = float(params.get("concentration", 2.0))
             rate = float(params.get("rate", 1.0))
             return torch.distributions.Gamma(conc, rate=rate).sample(shape).to(device=device, dtype=dtype)
+
+        if self.kind == "uniform":
+            # Uniform(-scale, scale); default scale=1 gives U[-1,1], zero-mean
+            scale = float(params.get("scale", 1.0))
+            return scale * (2.0 * torch.rand(*shape, device=device, dtype=dtype) - 1.0)
 
         raise ValueError(f"unknown noise kind: {self.kind}")
 

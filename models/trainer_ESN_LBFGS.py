@@ -150,7 +150,7 @@ def fit_ESN_MMD_LBFGS(
         Zm_raw = Xhist @ W.T  # (N_model,T,d)
 
         eps = 1e-8
-        if target_type == "returns" or target_type == None:
+        if target_type == "returns" or target_type is None:
             Zm = Zm_raw
         elif target_type == "log_returns":
             Zm = torch.log1p(Zm_raw)
@@ -167,7 +167,7 @@ def fit_ESN_MMD_LBFGS(
             Xk, Yk = Z_target, Zm
 
         # compute_mmd_loss is assumed to handle different batch sizes
-        return compute_mmd_loss(kernel, Xk, Yk, lead_lag, lags) + 1e-3 * float(torch.linalg.norm(W))
+        return compute_mmd_loss(kernel, Xk, Yk, lead_lag, lags) + 1e-3 * torch.linalg.norm(W)
     
     loss_history = []
 

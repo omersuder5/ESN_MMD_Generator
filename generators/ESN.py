@@ -49,9 +49,8 @@ def _ma_filter(e: Tensor, theta: Tensor) -> Tensor:
 
 
 def rescale_spectral_radius(A: Tensor, target_rho: float) -> Tensor:
-    # Rescales matrix A so its spectral radius matches target_rho
     """
-    Rescale A so that spectral radius max |lambda_i| equals target_rho.
+    Rescale square A so that spectral radius max |lambda_i| equals target_rho.
     One-time constraint at init, A remains fixed afterwards.
     """
     if not (0.0 < target_rho < 1.0):
@@ -62,6 +61,20 @@ def rescale_spectral_radius(A: Tensor, target_rho: float) -> Tensor:
         if rho <= 0:
             return A
         return A * (target_rho / rho)
+
+
+def rescale_spectral_norm(C: Tensor, target_scale: float) -> Tensor:
+    """
+    Rescale (possibly rectangular) C so its largest singular value equals target_scale.
+    Used for input matrix C since spectral radius is undefined for non-square matrices.
+    """
+    if target_scale <= 0:
+        raise ValueError("target_scale must be > 0")
+    with torch.no_grad():
+        sigma_max = torch.linalg.matrix_norm(C, ord=2)
+        if sigma_max <= 0:
+            return C
+        return C * (target_scale / sigma_max)
 
 
 class ESNGenerator(nn.Module):
@@ -121,7 +134,7 @@ class ESNGenerator(nn.Module):
         self.m = int(C.shape[1])
         self.d = int(out_dim)
 
-        self.washout_len = washout_len if not None else self.h # Use reservoir size as washout length if not specified
+        self.washout_len = washout_len if washout_len is not None else self.h
 
         # Quadratic feedback in the reservoir
         self.quad_feedback = bool(quad_feedback)
@@ -137,7 +150,7 @@ class ESNGenerator(nn.Module):
 
         # Rescale A to have spectral radius target_rho < 1 for echo state property, and register buffers/parameters
         A = rescale_spectral_radius(A, float(target_rho))
-        C = rescale_spectral_radius(C, float(target_C_scale)) if target_C_scale is not None and target_C_scale != 1 else C
+        C = rescale_spectral_norm(C, float(target_C_scale)) if target_C_scale is not None else C
         self.register_buffer("A", A)
         self.register_buffer("C", C)
 
@@ -287,7 +300,6 @@ class ESNAsTarget(nn.Module):
         self.T_default = int(T_default)
 
     @torch.no_grad()
-    def generate(self, *, N: int, T: int | None = None, noise=None):
-        # Calls the ESN to generate output sequences for a given number of samples and time steps
+    def generate(self, *, N: int, T: int | None = None):
         T_use = self.T_default if T is None else int(T)
         return self.esn(T=T_use, N=N)

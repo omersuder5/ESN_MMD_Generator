@@ -1,5 +1,5 @@
 import torch
-from traitlets import Any
+from typing import Any
 from sigkernel_.kernels import gram
 from utils.data import *
 

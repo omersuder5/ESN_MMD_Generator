@@ -211,3 +211,115 @@ class GARCH11(Proc):
             "beta": self.beta,
             "sigma2_0": self.sigma2_0,
         }
+
+
+# -------------------------
+# Markov tilted-uniform: a k-Markov process that SATISFIES Theorem A's
+# standing assumptions (compact support + density bounded below + Lipschitz),
+# unlike AR/GARCH whose Gaussian innovations give unbounded support.
+# -------------------------
+
+class MarkovTiltedUniform(Proc):
+    """
+    k-Markov process on the COMPACT interval [-M, M] with a tilted-uniform
+    conditional law:
+
+        p(x | x_{t-1}, ..., x_{t-k}) = (1/(2M)) * (1 + beta * x/M),   x in [-M, M]
+        beta = b * tanh( sum_{j=1}^k w_j * x_{t-j}/M ),   with 0 < b < 1  =>  |beta| < 1
+
+    Satisfies Theorem A's standing assumptions:
+      (A1) compact support [-M, M];
+      (A2) density in [(1-b)/(2M), (1+b)/(2M)] -> bounded above AND below, Lipschitz;
+           Lipschitz in the conditioning window (tanh tilt);
+      k-Markov by construction; transition density bounded below => Doeblin =>
+      uniformly ergodic => unique strictly-stationary law (reached after burn-in).
+
+    Sampled EXACTLY by inverse-CDF. With s = x/M and beta the tilt:
+        F(s) = (s+1)/2 + (beta/4)(s^2 - 1)
+        s = ( -1 + sqrt((1-beta)^2 + 4*beta*u) ) / beta     (u ~ Unif[0,1]);  s = 2u-1 if beta=0
+    The quantile q(u; past) is exactly the Knothe-Rosenblatt map Theorem A's
+    proof constructs -- so an ESN matching this is the most honest test of the theory.
+
+    Args:
+      w: length-k tilt weights (defines the Markov order and lag dependence).
+      b: tilt strength, 0 < b < 1 (keeps the density strictly positive).
+      M: support half-width; output lives in [-M, M].
+      burnin: steps discarded so the returned block is (approximately) stationary.
+    """
+
+    def __init__(
+        self,
+        T: int,
+        w=(0.6, -0.3),
+        b: float = 0.8,
+        M: float = 1.0,
+        d: int = 1,
+        burnin: Optional[int] = 200,
+    ):
+        super().__init__(T, d)
+        if not (0.0 < float(b) < 1.0):
+            raise ValueError("b must be in (0,1) to keep |beta|<1 (density strictly positive)")
+        if float(M) <= 0:
+            raise ValueError("M must be > 0")
+        w = torch.as_tensor(w, dtype=self.dtype).reshape(-1)
+        if w.numel() < 1:
+            raise ValueError("w must have at least one weight (Markov order k = len(w))")
+        self.k = int(w.numel())
+        self.b = float(b)
+        self.M = float(M)
+        self.burnin = int(burnin) if burnin is not None else 0
+        self.register_buffer("w", w)
+
+    def _quantile(self, u: Tensor, beta: Tensor) -> Tensor:
+        # tilted-uniform inverse-CDF on s in [-1,1]; u, beta: (N, d)
+        disc = ((1.0 - beta) ** 2 + 4.0 * beta * u).clamp_min(0.0)
+        safe_beta = torch.where(beta.abs() > 1e-12, beta, torch.ones_like(beta))
+        s_tilt = (-1.0 + torch.sqrt(disc)) / safe_beta
+        s_lin = 2.0 * u - 1.0                       # beta -> 0 limit (plain uniform)
+        return torch.where(beta.abs() > 1e-12, s_tilt, s_lin)
+
+    def _gen(self, N: int, u: Tensor) -> Tensor:
+        # u: (N, total_T, d) ~ Unif[0,1] (PIT draws). Returns (N, total_T - burnin, d).
+        total_T = u.shape[1]
+        d = self.d
+        M, w, k, b = self.M, self.w, self.k, self.b
+        x = torch.zeros((N, total_T, d), device=self.device, dtype=self.dtype)
+        for t in range(total_T):
+            arg = torch.zeros((N, d), device=self.device, dtype=self.dtype)
+            for j in range(1, k + 1):
+                if t - j >= 0:
+                    arg = arg + w[j - 1] * (x[:, t - j, :] / M)
+            beta = b * torch.tanh(arg)              # |beta| < b < 1
+            s = self._quantile(u[:, t, :], beta)    # in [-1, 1]
+            x[:, t, :] = M * s
+        return x[:, self.burnin:, :]
+
+    @torch.no_grad()
+    def generate(self, N: int, T: Optional[int] = None, eps: Optional[Tensor] = None) -> Tensor:
+        """
+        Returns (N, T, d). `eps`, if given, are the Unif[0,1] PIT draws of shape
+        (N, T+burnin, d); otherwise they are sampled internally with torch.rand.
+        """
+        if T is None:
+            T = self.T
+        total_T = int(T) + self.burnin
+        if eps is None:
+            u = torch.rand((N, total_T, self.d), device=self.device, dtype=self.dtype)
+        else:
+            u = eps.to(device=self.device, dtype=self.dtype)
+            if u.shape != (N, total_T, self.d):
+                raise ValueError(
+                    f"eps (Unif[0,1] PIT draws) must have shape ({N},{total_T},{self.d}), got {tuple(u.shape)}"
+                )
+        return self._gen(N, u)
+
+    def spec(self) -> dict:
+        return {
+            "name": "MarkovTiltedUniform",
+            "T": int(self.T),
+            "k": int(self.k),
+            "w": [float(x) for x in self.w],
+            "b": self.b,
+            "M": self.M,
+            "burnin": int(self.burnin),
+        }

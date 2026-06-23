@@ -27,6 +27,11 @@ def _get_activation(name_or_fn: Union[str, Callable[[Tensor], Tensor]]) -> Calla
         return torch.nn.functional.gelu
     if name == "softplus":
         return torch.nn.functional.softplus
+    # --- odd activations (g(-x) = -g(x)): preserve symmetry for symmetric targets ---
+    if name == "asinh":          # odd, UNBOUNDED (log-like tails): odd + can extend tails
+        return torch.asinh
+    if name == "softsign":       # odd, bounded (heavier approach to +-1 than tanh)
+        return torch.nn.functional.softsign
     raise ValueError(f"Unknown activation: {name_or_fn}")
 
 def _ma_filter(e: Tensor, theta: Tensor) -> Tensor:

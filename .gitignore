@@ -68,3 +68,17 @@ coverage.xml
 env/
 venv/
 ENV/
+
+# Claude Code
+.claude/
+
+# Research notes (personal scratch)
+IDEAS.md
+
+# Results / outputs / scratch
+Some_results/
+results/
+*.RECOVERED_*.ipynb
+
+# Local-only / experimental source (kept out of the public repo)
+generators/ESN_updated.py
